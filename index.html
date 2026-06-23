@@ -282,6 +282,21 @@ table.lb-table tr:last-child td{border-bottom:none;}
 .pop-in{animation:popIn .3s cubic-bezier(.2,.9,.3,1.2);}
 
 .footer-note{text-align:center;color:var(--text-low);font-size:11px;margin-top:30px;}
+
+/* ============ FLASHCARD CONFIG ============ */
+.fc-config-wrap{max-width:520px;margin:0 auto;}
+.fc-config-title{font-family:var(--font-display);font-size:22px;font-weight:700;margin:0 0 4px;}
+.fc-config-sub{font-size:13px;color:var(--text-mid);margin:0 0 22px;}
+.count-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:22px;}
+.count-btn{background:var(--bg-panel);border:1.5px solid var(--border-soft);border-radius:var(--radius-md);padding:14px 8px;text-align:center;cursor:pointer;transition:all .15s ease;}
+.count-btn:hover{border-color:var(--accent-mint);}
+.count-btn.selected{border-color:var(--accent-mint);background:var(--accent-mint-dim);}
+.count-btn .num{font-family:var(--font-mono);font-weight:700;font-size:22px;color:var(--text-hi);}
+.count-btn .lbl{font-size:11px;color:var(--text-low);margin-top:3px;}
+.fc-breakdown{background:var(--bg-panel);border:1px solid var(--border-soft);border-radius:var(--radius-md);padding:14px 16px;margin-bottom:22px;display:flex;gap:18px;flex-wrap:wrap;}
+.fc-bd-item{display:flex;align-items:center;gap:8px;font-size:13px;}
+.fc-bd-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+.fc-mode-note{font-size:12px;color:var(--text-low);background:var(--bg-deep);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:22px;line-height:1.6;}
 </style>
 </head>
 <body>
@@ -930,16 +945,84 @@ function buildSequence(pool, count){
 }
 
 function startGame(gameId){
-  if(gameId==='flashcard') startFlashcard();
+  if(gameId==='flashcard') navigate('flashcard-config');
   else if(gameId==='quiz') startQuiz();
   else if(gameId==='fillblank') startFillblank();
 }
 
 /* ====================================================================
-   GAME 1: FLASHCARD
+   GAME 1: FLASHCARD CONFIG + SMART DECK BUILDER
    ==================================================================== */
-function startFlashcard(){
-  var deck = shuffleArray(state.vocab).slice(0, Math.min(state.vocab.length, 25));
+var FC_DEFAULT_COUNT = 10;
+
+function buildSmartDeck(count){
+  var total = state.vocab.length;
+  count = Math.min(count, total);
+  // Split into weak (level 0-2) and strong (level 3+)
+  var weak = [], strong = [];
+  state.vocab.forEach(function(w){
+    if(getMastery(w).level <= 2) weak.push(w);
+    else strong.push(w);
+  });
+  weak = shuffleArray(weak);
+  strong = shuffleArray(strong);
+  // Fill deck: all weak first, then strong to make up the count
+  var deck = weak.concat(strong).slice(0, count);
+  return deck;
+}
+
+function renderFlashcardConfig(){
+  var total = state.vocab.length;
+  var weak = state.vocab.filter(function(w){ return getMastery(w).level <= 2; }).length;
+  var learning = state.vocab.filter(function(w){ var l=getMastery(w).level; return l>=1&&l<=3; }).length;
+  var mastered = masteredCount();
+  var counts = [5, 10, 15, 20];
+  var stored = state.fcCount || FC_DEFAULT_COUNT;
+  return '<div class="game-header">'+
+    '<button class="back-btn" data-nav="menu">← Menu</button>'+
+  '</div>'+
+  '<div class="fc-config-wrap">'+
+    '<div class="fc-config-title">🃏 Flashcard</div>'+
+    '<div class="fc-config-sub">Chọn số thẻ cho lượt học này</div>'+
+    '<div class="count-grid">'+
+      counts.map(function(n){
+        var avail = Math.min(n, total);
+        var isSelected = (stored === n);
+        var isOver = (n > total);
+        return '<div class="count-btn'+(isSelected?' selected':'')+(isOver?' disabled':'')+'" data-count="'+n+'">'+
+          '<div class="num">'+(isOver?total:n)+'</div>'+
+          '<div class="lbl">'+(isOver?'(hết từ)':'thẻ')+'</div>'+
+        '</div>';
+      }).join('')+
+    '</div>'+
+    '<div class="fc-breakdown">'+
+      '<div class="fc-bd-item"><div class="fc-bd-dot" style="background:var(--accent-red)"></div><span><b>'+weak+'</b> từ chưa thuộc (ưu tiên ôn)</span></div>'+
+      '<div class="fc-bd-item"><div class="fc-bd-dot" style="background:var(--accent-amber)"></div><span><b>'+learning+'</b> từ đang học</span></div>'+
+      '<div class="fc-bd-item"><div class="fc-bd-dot" style="background:var(--accent-mint)"></div><span><b>'+mastered+'</b> từ đã thuộc</span></div>'+
+    '</div>'+
+    '<div class="fc-mode-note">⚡ <b>Chế độ thông minh:</b> Từ chưa thuộc (đỏ) được ưu tiên xếp lên trước. Từ đã thuộc xuất hiện ít hơn nhưng vẫn được ôn để không quên lâu dài.</div>'+
+    '<button class="btn btn-primary btn-block" id="btnStartFC" style="font-size:15px;padding:14px;">▶ Bắt đầu '+Math.min(stored,total)+' thẻ</button>'+
+  '</div>';
+}
+function bindFlashcardConfigEvents(){
+  $('.back-btn').addEventListener('click', function(){ navigate('menu'); });
+  $all('.count-btn:not(.disabled)').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var n = parseInt(btn.getAttribute('data-count'),10);
+      state.fcCount = n;
+      sounds.click();
+      render();
+    });
+  });
+  $('#btnStartFC').addEventListener('click', function(){
+    sounds.click();
+    startFlashcard(state.fcCount || FC_DEFAULT_COUNT);
+  });
+}
+
+function startFlashcard(count){
+  count = count || FC_DEFAULT_COUNT;
+  var deck = buildSmartDeck(count);
   state.session = {
     type:'flashcard',
     deck: deck,
@@ -1429,7 +1512,8 @@ function bindResultEvents(){
   var type = state.session.result.type;
   $('#btnReplay').addEventListener('click', function(){
     sounds.click();
-    startGame(type);
+    if(type === 'flashcard') navigate('flashcard-config');
+    else startGame(type);
   });
 }
 
@@ -1442,6 +1526,7 @@ function render(){
   if(screen==='menu'){ app.innerHTML = renderMenu(); bindMenuEvents(); }
   else if(screen==='vocab'){ app.innerHTML = renderVocab(); bindVocabEvents(); }
   else if(screen==='leaderboard'){ app.innerHTML = renderLeaderboard(); bindLeaderboardEvents(); }
+  else if(screen==='flashcard-config'){ app.innerHTML = renderFlashcardConfig(); bindFlashcardConfigEvents(); }
   else if(screen==='flashcard'){ app.innerHTML = renderFlashcard(); bindFlashcardEvents(); }
   else if(screen==='quiz'){ app.innerHTML = renderQuiz(); bindQuizEvents(); }
   else if(screen==='fillblank'){ app.innerHTML = renderFillblank(); bindFillblankEvents(); }
