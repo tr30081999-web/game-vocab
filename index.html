@@ -1026,6 +1026,10 @@ function startFlashcard(count){
   state.session = {
     type:'flashcard',
     deck: deck,
+    retryDeck: [],
+    attemptMap: {},
+    roundNum: 1,
+    uniqueTotal: deck.length,
     index: 0,
     flipped:false,
     correct:0,
@@ -1082,8 +1086,12 @@ function bindFlashcardEvents(){
 function flashcardAnswer(remembered){
   var s = state.session;
   var word = s.deck[s.index];
+  var wKey = word.en;
+  if(!s.attemptMap[wKey]) s.attemptMap[wKey] = {attempts:0, firstCorrect:false};
+  s.attemptMap[wKey].attempts++;
   if(remembered){
     s.correct++;
+    if(!s.attemptMap[wKey].firstCorrect) s.attemptMap[wKey].firstCorrect = true;
     bumpMastery(word, 1);
     addXP(8);
     sounds.correct();
@@ -1091,13 +1099,24 @@ function flashcardAnswer(remembered){
     burstConfetti(rect.left+rect.width/2, rect.top+30, 16);
   } else {
     s.wrong++;
+    s.retryDeck.push(word);
     bumpMastery(word, -1);
     addXP(2);
     sounds.wrong();
   }
   s.index++;
   if(s.index >= s.deck.length){
-    finishFlashcard();
+    if(s.retryDeck.length > 0){
+      s.roundNum++;
+      s.deck = shuffleArray(s.retryDeck);
+      s.retryDeck = [];
+      s.index = 0;
+      s.flipped = false;
+      showToast('🔁 Vòng ôn '+s.roundNum+': '+s.deck.length+' thẻ chưa nhớ — ôn lại đến khi thuộc!');
+      render();
+    } else {
+      finishFlashcard();
+    }
   } else {
     s.flipped = false;
     render();
@@ -1114,8 +1133,10 @@ function finishFlashcard(){
     score:score,
     correct:s.correct,
     wrong:s.wrong,
-    total:s.deck.length,
+    total:s.uniqueTotal,
     isRecord:isRecord,
+    attemptMap:s.attemptMap,
+    roundsNeeded:s.roundNum,
     xpEarned: s.correct*8 + s.wrong*2
   };
   sounds.finish();
@@ -1155,11 +1176,16 @@ function startQuiz(){
   state.session = {
     type:'quiz',
     questions: picks.map(function(w){ return buildQuizQuestion(w, state.vocab); }),
+    retryPool: [],
+    attemptMap: {},   // word.en -> {attempts:N, firstCorrect:bool}
+    roundNum: 1,
+    uniqueTotal: picks.length,
     index:0,
     score:0,
     streak:0,
     bestStreak:0,
-    correctCount:0,
+    correctCount:0,       // unique words eventually answered correctly
+    firstTimeCorrect:0,   // correct on very first attempt (no retry needed)
     wrongWords:[],
     answered:false,
     timeLeft: QUIZ_TIME
@@ -1169,17 +1195,19 @@ function startQuiz(){
 function renderQuiz(){
   var s = state.session;
   var q = s.questions[s.index];
-  var pct = Math.round(s.index/s.questions.length*100);
+  var uniqueDone = Object.keys(s.attemptMap).filter(function(k){ return s.attemptMap[k].firstCorrect; }).length;
+  var pct = Math.round(uniqueDone/s.uniqueTotal*100);
   var timePct = Math.round(s.timeLeft/QUIZ_TIME*100);
   var timeColor = timePct>50?'var(--accent-mint)':(timePct>20?'var(--accent-amber)':'var(--accent-red)');
   var promptLabel = q.direction==='en2vi' ? 'Từ này có nghĩa là gì?' : 'Từ tiếng Anh nào có nghĩa này?';
   var mainText = q.direction==='en2vi' ? q.word.en : q.word.vi;
   var context = (q.direction==='en2vi' && q.word.exEn) ? q.word.exEn : '';
+  var retryBadge = s.roundNum>1 ? '<span class="combo-tag" style="background:var(--accent-amber);color:#000;">Vòng ôn '+s.roundNum+'</span>' : '';
   return ''+
   '<div class="game-header">'+
     '<button class="back-btn" data-nav="menu">← Menu</button>'+
     '<div class="hud">'+
-      '<div class="hud-item">❓ '+(s.index+1)+'/'+s.questions.length+'</div>'+
+      '<div class="hud-item">✅ '+uniqueDone+'/'+s.uniqueTotal+' '+retryBadge+'</div>'+
       '<div class="hud-item score">⭐ '+s.score+'</div>'+
       '<div class="hud-item streak'+(s.streak>=3?' hot':'')+'"><span class="flame">🔥</span> '+s.streak+(s.streak>=3?'<span class="combo-tag">x'+comboMultiplier(s.streak)+'</span>':'')+'</div>'+
     '</div>'+
@@ -1246,6 +1274,9 @@ function submitQuizAnswer(selectedIdx){
   var q = s.questions[s.index];
   var correctIdx = q.options.indexOf(q.correct);
   var isCorrect = selectedIdx===correctIdx;
+  var wKey = q.word.en;
+  if(!s.attemptMap[wKey]) s.attemptMap[wKey] = {attempts:0, firstCorrect:false};
+  s.attemptMap[wKey].attempts++;
   $all('[data-opt]').forEach(function(btn,i){
     btn.setAttribute('disabled','disabled');
     if(i===correctIdx) btn.classList.add('correct');
@@ -1253,8 +1284,12 @@ function submitQuizAnswer(selectedIdx){
   });
   var promptEl = $('#quizPrompt');
   if(isCorrect){
-    s.streak++; s.correctCount++;
-    registerStreak(s.streak);
+    if(!s.attemptMap[wKey].firstCorrect){
+      s.attemptMap[wKey].firstCorrect = true;
+      s.correctCount++;
+      if(s.attemptMap[wKey].attempts === 1) s.firstTimeCorrect++;
+    }
+    s.streak++; registerStreak(s.streak);
     if(s.streak>s.bestStreak) s.bestStreak = s.streak;
     var mult = comboMultiplier(s.streak);
     var basePts = 100 + Math.round(s.timeLeft*5);
@@ -1266,22 +1301,33 @@ function submitQuizAnswer(selectedIdx){
     if(promptEl) promptEl.classList.add('pulse-glow');
     var rect = $('#quizOptions').getBoundingClientRect();
     floatScore('+'+pts, rect.left+rect.width/2-20, rect.top, '#2EE6A6');
-    if(s.streak>0 && s.streak%5===0){
-      sounds.milestone();
-      burstConfetti(window.innerWidth/2, 160, 30);
-      showToast('🔥 Combo x'+s.streak+'! Tuyệt vời!');
-    }
+    if(s.streak>0 && s.streak%5===0){ sounds.milestone(); burstConfetti(window.innerWidth/2,160,30); showToast('🔥 Combo x'+s.streak+'! Tuyệt vời!'); }
   } else {
     s.streak = 0;
-    s.wrongWords.push(q.word);
+    // Track unique wrong words for result screen
+    var alreadyWrong = s.wrongWords.some(function(w){ return w.en===q.word.en; });
+    if(!alreadyWrong) s.wrongWords.push(q.word);
+    // Re-queue into retry pool
+    s.retryPool.push(buildQuizQuestion(q.word, state.vocab));
     sounds.wrong();
     if(promptEl) promptEl.classList.add('pulse-glow-red');
-    var card = $('.game-header').parentElement;
   }
   setTimeout(function(){
     s.index++;
     if(s.index >= s.questions.length){
-      finishQuiz();
+      if(s.retryPool.length > 0){
+        // Start a new retry round
+        s.roundNum++;
+        s.questions = shuffleArray(s.retryPool);
+        s.retryPool = [];
+        s.index = 0;
+        s.answered = false;
+        s.timeLeft = QUIZ_TIME;
+        showToast('🔁 Vòng ôn '+s.roundNum+': '+s.questions.length+' từ chưa đúng — ôn lại đến khi thuộc!');
+        render();
+      } else {
+        finishQuiz();
+      }
     } else {
       s.answered = false;
       s.timeLeft = QUIZ_TIME;
@@ -1298,10 +1344,13 @@ function finishQuiz(){
     type:'quiz',
     score:s.score,
     correct:s.correctCount,
-    total:s.questions.length,
+    firstTimeCorrect:s.firstTimeCorrect,
+    total:s.uniqueTotal,
     bestStreak:s.bestStreak,
     isRecord:isRecord,
     wrongWords:s.wrongWords,
+    attemptMap:s.attemptMap,
+    roundsNeeded:s.roundNum,
     xpEarned: Math.round(s.score/8)
   };
   sounds.finish();
@@ -1319,11 +1368,16 @@ function startFillblank(){
   state.session = {
     type:'fillblank',
     items: picks,
+    retryPool: [],
+    attemptMap: {},
+    roundNum: 1,
+    uniqueTotal: picks.length,
     index:0,
     score:0,
     streak:0,
     bestStreak:0,
     correctCount:0,
+    firstTimeCorrect:0,
     wrongWords:[],
     answered:false,
     hintUsed:false
@@ -1334,15 +1388,17 @@ function renderFillblank(){
   var s = state.session;
   var word = s.items[s.index];
   var loc = locateBlank(word);
-  var pct = Math.round(s.index/s.items.length*100);
+  var uniqueDone = Object.keys(s.attemptMap).filter(function(k){ return s.attemptMap[k].firstCorrect; }).length;
+  var pct = Math.round(uniqueDone/s.uniqueTotal*100);
   var pre = escapeHtml(word.exEn.slice(0,loc.index));
   var post = escapeHtml(word.exEn.slice(loc.index+loc.length));
   var widthCh = Math.max(loc.length+2, 5);
+  var retryBadge = s.roundNum>1 ? '<span class="combo-tag" style="background:var(--accent-amber);color:#000;">Vòng ôn '+s.roundNum+'</span>' : '';
   return ''+
   '<div class="game-header">'+
     '<button class="back-btn" data-nav="menu">← Menu</button>'+
     '<div class="hud">'+
-      '<div class="hud-item">✍️ '+(s.index+1)+'/'+s.items.length+'</div>'+
+      '<div class="hud-item">✅ '+uniqueDone+'/'+s.uniqueTotal+' '+retryBadge+'</div>'+
       '<div class="hud-item score">⭐ '+s.score+'</div>'+
       '<div class="hud-item streak'+(s.streak>=3?' hot':'')+'"><span class="flame">🔥</span> '+s.streak+(s.streak>=3?'<span class="combo-tag">x'+comboMultiplier(s.streak)+'</span>':'')+'</div>'+
     '</div>'+
@@ -1391,13 +1447,20 @@ function checkFillblank(){
   var userVal = (input.value||'').trim().toLowerCase();
   var correctVal = loc.matched.toLowerCase();
   var isCorrect = userVal===correctVal;
+  var wKey = word.en;
+  if(!s.attemptMap[wKey]) s.attemptMap[wKey] = {attempts:0, firstCorrect:false};
+  s.attemptMap[wKey].attempts++;
   s.answered = true;
   input.disabled = true;
   var fb = $('#fbFeedback');
   var sentenceBox = $('#fbSentence');
   if(isCorrect){
-    s.streak++; s.correctCount++;
-    registerStreak(s.streak);
+    if(!s.attemptMap[wKey].firstCorrect){
+      s.attemptMap[wKey].firstCorrect = true;
+      s.correctCount++;
+      if(s.attemptMap[wKey].attempts === 1) s.firstTimeCorrect++;
+    }
+    s.streak++; registerStreak(s.streak);
     if(s.streak>s.bestStreak) s.bestStreak = s.streak;
     var mult = comboMultiplier(s.streak);
     var pts = Math.round((s.hintUsed?60:100)*mult);
@@ -1411,13 +1474,12 @@ function checkFillblank(){
     sounds.correct();
     var rect = sentenceBox.getBoundingClientRect();
     burstConfetti(rect.left+rect.width/2, rect.top+20, 18);
-    if(s.streak>0 && s.streak%5===0){
-      sounds.milestone();
-      showToast('🔥 Combo x'+s.streak+'!');
-    }
+    if(s.streak>0 && s.streak%5===0){ sounds.milestone(); showToast('🔥 Combo x'+s.streak+'!'); }
   } else {
     s.streak = 0;
-    s.wrongWords.push(word);
+    var alreadyWrong = s.wrongWords.some(function(w){ return w.en===word.en; });
+    if(!alreadyWrong) s.wrongWords.push(word);
+    s.retryPool.push(word);
     input.classList.add('wrong');
     input.value = loc.matched;
     sentenceBox.classList.add('pulse-glow-red');
@@ -1435,8 +1497,13 @@ function skipFillblank(){
   if(s.answered) return;
   var word = s.items[s.index];
   var loc = locateBlank(word);
+  var wKey = word.en;
+  if(!s.attemptMap[wKey]) s.attemptMap[wKey] = {attempts:0, firstCorrect:false};
+  s.attemptMap[wKey].attempts++;
   s.streak = 0;
-  s.wrongWords.push(word);
+  var alreadyWrong = s.wrongWords.some(function(w){ return w.en===word.en; });
+  if(!alreadyWrong) s.wrongWords.push(word);
+  s.retryPool.push(word);
   var input = $('#blankInput');
   input.value = loc.matched;
   input.disabled = true;
@@ -1456,7 +1523,16 @@ function nextFillblank(){
   s.answered = false;
   s.hintUsed = false;
   if(s.index >= s.items.length){
-    finishFillblank();
+    if(s.retryPool.length > 0){
+      s.roundNum++;
+      s.items = shuffleArray(s.retryPool);
+      s.retryPool = [];
+      s.index = 0;
+      showToast('🔁 Vòng ôn '+s.roundNum+': '+s.items.length+' từ chưa đúng — ôn lại đến khi thuộc!');
+      render();
+    } else {
+      finishFillblank();
+    }
   } else {
     render();
   }
@@ -1470,10 +1546,13 @@ function finishFillblank(){
     type:'fillblank',
     score:s.score,
     correct:s.correctCount,
-    total:s.items.length,
+    firstTimeCorrect:s.firstTimeCorrect,
+    total:s.uniqueTotal,
     bestStreak:s.bestStreak,
     isRecord:isRecord,
     wrongWords:s.wrongWords,
+    attemptMap:s.attemptMap,
+    roundsNeeded:s.roundNum,
     xpEarned: Math.round(s.score/8)
   };
   sounds.finish();
@@ -1487,18 +1566,51 @@ function renderResult(){
   var r = state.session.result;
   var titleMap = {flashcard:'Hoàn thành Flashcard!', quiz:'Hoàn thành Quiz!', fillblank:'Hoàn thành Điền từ!'};
   var emojiMap = {flashcard:'🃏', quiz:'🎯', fillblank:'✍️'};
-  var accuracy = r.total ? Math.round((r.correct/r.total)*100) : 0;
+  var accuracy = r.total ? Math.round(((r.firstTimeCorrect !== undefined ? r.firstTimeCorrect : r.correct)/r.total)*100) : 0;
+  var firstTime = r.firstTimeCorrect !== undefined ? r.firstTimeCorrect : r.correct;
   var wrongWords = r.wrongWords || [];
+  var attemptMap = r.attemptMap || {};
+  var roundsNeeded = r.roundsNeeded || 1;
+
+  // Build per-word attempt rows
+  var attemptRows = '';
+  var multiAttemptWords = [];
+  Object.keys(attemptMap).forEach(function(key){
+    var entry = attemptMap[key];
+    if(entry.attempts > 1){
+      var word = state.vocab.find ? state.vocab.find(function(w){return w.en===key;}) : null;
+      if(!word){ for(var i=0;i<state.vocab.length;i++){ if(state.vocab[i].en===key){word=state.vocab[i];break;} } }
+      multiAttemptWords.push({key:key, vi:word?word.vi:'', attempts:entry.attempts, firstCorrect:entry.firstCorrect});
+    }
+  });
+  multiAttemptWords.sort(function(a,b){return b.attempts-a.attempts;});
+  if(multiAttemptWords.length){
+    attemptRows = '<div class="review-list" style="margin-bottom:14px;">'+
+      '<h4>🔁 Số lần lặp lại</h4>'+
+      multiAttemptWords.map(function(e){
+        var dots = '';
+        for(var i=0;i<e.attempts;i++) dots += i===0?'<span style="color:var(--accent-red)">✗</span>':'<span style="color:var(--accent-mint)">✓</span>';
+        return '<div class="review-item">'+
+          '<span class="en">'+escapeHtml(e.key)+'<span style="color:var(--text-low);font-weight:400;"> — '+escapeHtml(e.vi)+'</span></span>'+
+          '<span style="font-family:var(--font-mono);font-size:12px;letter-spacing:2px;">'+dots+'</span>'+
+        '</div>';
+      }).join('')+
+    '</div>';
+  }
+
   return '<div class="result-wrap">'+
     '<div class="result-emoji">'+emojiMap[r.type]+'</div>'+
     '<div class="result-title">'+titleMap[r.type]+'</div>'+
     (r.isRecord?'<div class="record-banner">🏆 Kỷ lục mới trong ngày hôm nay!</div>':'')+
+    (roundsNeeded>1?'<div class="record-banner" style="background:rgba(139,107,255,.15);border-color:rgba(139,107,255,.4);color:var(--accent-violet);">🔁 Hoàn thành sau '+roundsNeeded+' vòng ôn — tất cả đều đã đúng!</div>':'')+
     '<div class="result-stats">'+
       '<div class="result-stat"><div class="num">'+r.score+'</div><div class="lbl">Điểm số</div></div>'+
-      '<div class="result-stat"><div class="num">'+accuracy+'%</div><div class="lbl">Độ chính xác ('+r.correct+'/'+r.total+')</div></div>'+
-      '<div class="result-stat"><div class="num">+'+r.xpEarned+'</div><div class="lbl">XP nhận được</div></div>'+
+      '<div class="result-stat"><div class="num">'+accuracy+'%</div><div class="lbl">Đúng ngay ('+firstTime+'/'+r.total+')</div></div>'+
+      '<div class="result-stat"><div class="num">'+(roundsNeeded>1?'🔁 '+roundsNeeded:'✅ 1')+'</div><div class="lbl">'+(roundsNeeded>1?'vòng ôn để thuộc':'vòng — hoàn hảo!')+'</div></div>'+
     '</div>'+
-    (wrongWords.length?'<div class="review-list"><h4>📌 Từ cần ôn lại</h4>'+
+    '<div style="text-align:center;margin:-8px 0 16px;font-family:var(--font-mono);color:var(--accent-amber);font-size:13px;">+'+r.xpEarned+' XP</div>'+
+    attemptRows+
+    (wrongWords.length && !multiAttemptWords.length?'<div class="review-list"><h4>📌 Từ cần ôn lại</h4>'+
       wrongWords.map(function(w){ return '<div class="review-item"><span class="en">'+escapeHtml(w.en)+'</span><span class="vi">'+escapeHtml(w.vi)+'</span></div>'; }).join('')+
     '</div>':'')+
     '<div class="result-actions">'+
