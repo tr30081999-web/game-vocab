@@ -344,6 +344,7 @@ var LS_VOCAB = 'confxp_vocab_v1';
 var LS_MASTERY = 'confxp_mastery_v1';
 var LS_STATS = 'confxp_stats_v1';
 var LS_LEADERBOARD = 'confxp_leaderboard_v1';
+var LS_DAILY = 'confxp_daily_v1';
 
 function loadJSON(key, fallback){
   try{
@@ -362,6 +363,7 @@ var state = {
   mastery: loadJSON(LS_MASTERY, {}),
   stats: loadJSON(LS_STATS, {xp:0, gamesPlayed:0, bestStreakEver:0}),
   leaderboard: loadJSON(LS_LEADERBOARD, {}),
+  daily: loadJSON(LS_DAILY, {currentStreak:0, longestStreak:0, lastDate:'', history:[]}),
   session: null,
   vocabSearch: ''
 };
@@ -369,7 +371,134 @@ var state = {
 function saveVocab(){ saveJSON(LS_VOCAB, state.vocab); }
 function saveMastery(){ saveJSON(LS_MASTERY, state.mastery); }
 function saveStats(){ saveJSON(LS_STATS, state.stats); }
-function saveLeaderboard(){ saveJSON(LS_LEADERBOARD, state.leaderboard); }
+function saveDaily(){ saveJSON(LS_DAILY, state.daily); }
+
+/* ====================================================================
+   DAILY STREAK ENGINE
+   ==================================================================== */
+var MILESTONES = [
+  {days:3,   emoji:'🌱', title:'3 ngày liên tiếp!',  msg:'Thói quen đang bắt đầu hình thành. Tiếp tục nhé!'},
+  {days:5,   emoji:'💪', title:'5 ngày liên tiếp!',  msg:'Một tuần làm việc — buổi họp nào cũng có bạn đồng hành!'},
+  {days:7,   emoji:'🧠', title:'1 tuần liên tiếp!',  msg:'7 ngày! Não bộ đang ghi nhớ từ vựng hiệu quả hơn rồi.'},
+  {days:10,  emoji:'🎯', title:'10 ngày liên tiếp!', msg:'Bạn đang thật sự nghiêm túc. Các đồng nghiệp nước ngoài chắc chắn đã nhận ra!'},
+  {days:14,  emoji:'🗣️', title:'2 tuần liên tiếp!',  msg:'Từ vựng bắt đầu xuất hiện tự nhiên hơn trong các cuộc họp rồi đó.'},
+  {days:21,  emoji:'🏆', title:'21 ngày liên tiếp!', msg:'Khoa học nói 21 ngày để tạo thói quen — bạn vừa vượt qua cột mốc đó!'},
+  {days:30,  emoji:'🌟', title:'1 tháng liên tiếp!', msg:'30 ngày! Bạn đã kiên trì hơn 95% mọi người. Đây là sự tiến bộ thật sự.'},
+  {days:60,  emoji:'🚀', title:'2 tháng liên tiếp!', msg:'60 ngày tiếng Anh mỗi ngày. Sự tự tin trong họp của bạn đã khác rất nhiều rồi.'},
+  {days:100, emoji:'👑', title:'100 ngày liên tiếp!',msg:'100 ngày! Bạn đã biến việc học thành một phần của cuộc sống. Đây là điều không ai lấy đi được.'}
+];
+
+function dateDiffDays(a, b){
+  // a, b are "YYYY-MM-DD" strings
+  var da = new Date(a), db = new Date(b);
+  return Math.round((db - da) / 86400000);
+}
+
+function checkDailyStreakOnGameComplete(){
+  var today = todayKey();
+  var d = state.daily;
+  if(d.lastDate === today) return; // already checked in today
+  var diff = d.lastDate ? dateDiffDays(d.lastDate, today) : 999;
+  var prevStreak = d.currentStreak || 0;
+  if(diff === 1){
+    d.currentStreak = prevStreak + 1;
+  } else if(diff > 1){
+    d.currentStreak = 1; // reset
+  } else {
+    d.currentStreak = Math.max(1, prevStreak);
+  }
+  d.longestStreak = Math.max(d.longestStreak || 0, d.currentStreak);
+  d.lastDate = today;
+  if(!d.history) d.history = [];
+  if(d.history.indexOf(today) === -1) d.history.push(today);
+  // keep only last 120 days
+  if(d.history.length > 120) d.history = d.history.slice(-120);
+  saveDaily();
+  // check for milestone
+  var milestone = null;
+  MILESTONES.forEach(function(m){
+    if(d.currentStreak === m.days) milestone = m;
+  });
+  if(milestone) showMilestone(milestone, d.currentStreak);
+  else if(diff === 1) showToast('🔥 Ngày '+ d.currentStreak +' liên tiếp! Chuỗi học vẫn tiếp tục!');
+  else if(diff > 1 && prevStreak >= 3) showToast('😅 Chuỗi '+prevStreak+' ngày đã bị gián đoạn. Bắt đầu lại thôi!');
+}
+
+function showMilestone(m, streak){
+  // Remove existing overlay if any
+  var old = document.getElementById('milestoneOverlay');
+  if(old) old.remove();
+  var overlay = document.createElement('div');
+  overlay.id = 'milestoneOverlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(10,14,31,.88);display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(6px);';
+  overlay.innerHTML =
+    '<div style="background:linear-gradient(160deg,#1A2142,#121730);border:1px solid rgba(255,200,87,.4);border-radius:24px;padding:32px 24px;max-width:360px;width:100%;text-align:center;animation:popIn .4s cubic-bezier(.2,.9,.3,1.2);">'+
+      '<div style="font-size:56px;margin-bottom:8px;">'+m.emoji+'</div>'+
+      '<div style="font-family:var(--font-display);font-size:22px;font-weight:700;color:var(--accent-amber);margin-bottom:10px;">'+m.title+'</div>'+
+      '<div style="font-size:15px;color:var(--text-mid);line-height:1.6;margin-bottom:20px;">'+m.msg+'</div>'+
+      '<div style="font-family:var(--font-mono);font-size:13px;color:var(--text-low);margin-bottom:22px;">🔥 Chuỗi hiện tại: <b style="color:var(--accent-amber)">'+streak+' ngày</b></div>'+
+      '<button id="btnMilestoneClose" style="background:linear-gradient(135deg,var(--accent-amber),#e89b00);color:#000;font-weight:700;font-size:14px;border:none;border-radius:12px;padding:12px 28px;cursor:pointer;width:100%;">🎉 Tiếp tục học!</button>'+
+    '</div>';
+  document.body.appendChild(overlay);
+  sounds.milestone();
+  burstConfetti(window.innerWidth/2, window.innerHeight/3, 40);
+  document.getElementById('btnMilestoneClose').addEventListener('click', function(){
+    overlay.remove();
+  });
+}
+
+function renderStreakCalendar(){
+  var d = state.daily;
+  var streak = d.currentStreak || 0;
+  var longest = d.longestStreak || 0;
+  var today = todayKey();
+  var studiedToday = (d.lastDate === today);
+
+  // Find next and previous milestone
+  var nextM = null, prevM = null;
+  for(var i=0;i<MILESTONES.length;i++){
+    if(MILESTONES[i].days > streak){ nextM = MILESTONES[i]; break; }
+    prevM = MILESTONES[i];
+  }
+  var prevDays = prevM ? prevM.days : 0;
+  var nextDays = nextM ? nextM.days : null;
+  var pct = nextDays ? Math.round((streak - prevDays) / (nextDays - prevDays) * 100) : 100;
+
+  var todayBadge = studiedToday
+    ? '<span style="font-size:11px;background:var(--accent-mint-dim);color:var(--accent-mint);border:1px solid rgba(46,230,166,.3);border-radius:999px;padding:3px 10px;font-weight:600;">✓ Đã điểm danh hôm nay</span>'
+    : '<span style="font-size:11px;background:var(--accent-amber-dim);color:var(--accent-amber);border:1px solid rgba(255,200,87,.3);border-radius:999px;padding:3px 10px;font-weight:600;">Hôm nay chưa học</span>';
+
+  return '<div style="background:linear-gradient(160deg,var(--bg-panel-2),var(--bg-panel));border:1px solid var(--border-soft);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:18px;">'+
+    // Header row
+    '<div style="background:linear-gradient(135deg,rgba(255,200,87,.10),rgba(139,107,255,.08));padding:16px 18px 14px;display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--border-soft);">'+
+      '<div style="font-size:42px;line-height:1;filter:drop-shadow(0 0 10px rgba(255,200,87,.55));">🔥</div>'+
+      '<div style="flex:1;">'+
+        '<div style="font-family:var(--font-display);font-size:30px;font-weight:700;color:var(--accent-amber);line-height:1;">'+streak+' <span style="font-size:14px;color:var(--text-mid);font-weight:500;">ngày liên tiếp</span></div>'+
+        '<div style="margin-top:5px;">'+todayBadge+'</div>'+
+      '</div>'+
+      '<div style="text-align:right;">'+
+        '<div style="font-family:var(--font-mono);font-size:18px;font-weight:700;color:var(--accent-violet);">'+longest+'</div>'+
+        '<div style="font-size:10px;color:var(--text-low);margin-top:1px;">kỷ lục</div>'+
+      '</div>'+
+    '</div>'+
+    // Milestone progress
+    '<div style="padding:14px 18px;">'+
+      (nextM ?
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">'+
+          '<div style="font-size:12.5px;color:var(--text-mid);">'+nextM.emoji+' Mục tiêu: <b style="color:var(--text-hi);">'+nextM.title.replace('!','')+'</b></div>'+
+          '<div style="font-family:var(--font-mono);font-size:12px;color:var(--accent-amber);">'+streak+'/'+nextM.days+'</div>'+
+        '</div>'+
+        '<div style="height:7px;background:var(--bg-panel-3);border-radius:999px;overflow:hidden;">'+
+          '<div style="height:100%;width:'+pct+'%;background:linear-gradient(90deg,var(--accent-amber),var(--accent-mint));border-radius:999px;transition:width .5s ease;"></div>'+
+        '</div>'+
+        '<div style="font-size:11px;color:var(--text-low);margin-top:6px;">Còn <b style="color:var(--accent-amber);">'+(nextM.days-streak)+' ngày</b> nữa — '+nextM.msg.split('.')[0]+'.</div>'
+      :
+        '<div style="text-align:center;color:var(--accent-mint);font-size:13px;font-weight:600;">🏆 Bạn đã vượt qua tất cả cột mốc! Tiếp tục duy trì nhé.</div>'
+      )+
+    '</div>'+
+  '</div>';
+}
+function saveDaily(){ saveJSON(LS_DAILY, state.daily); }
 
 function masteryKey(word){ return word.en.trim().toLowerCase(); }
 function getMastery(word){
@@ -648,6 +777,7 @@ function renderMenu(){
     '<div class="stat-card"><div class="num">'+(state.stats.bestStreakEver||0)+'</div><div class="lbl">Streak cao nhất</div></div>'+
     '<div class="stat-card"><div class="num">'+(state.stats.xp||0)+'</div><div class="lbl">Tổng XP</div></div>'+
   '</div>'+
+  renderStreakCalendar()+
   '<div class="section-title">Chọn mini-game</div>'+
   '<div class="mode-grid">'+
     modeCard('flash','🃏','Flashcard','Lật thẻ xem nghĩa, tự đánh giá đã nhớ hay chưa để theo dõi mức độ thuộc bài.', fcOk, 'Cần ≥1 từ vựng','flashcard')+
@@ -1126,6 +1256,7 @@ function finishFlashcard(){
   var s = state.session;
   state.stats.gamesPlayed = (state.stats.gamesPlayed||0)+1;
   saveStats();
+  checkDailyStreakOnGameComplete();
   var score = s.correct*10;
   var isRecord = recordLeaderboard('flashcard', score, s.correct);
   state.session.result = {
@@ -1339,6 +1470,7 @@ function finishQuiz(){
   var s = state.session;
   state.stats.gamesPlayed = (state.stats.gamesPlayed||0)+1;
   saveStats();
+  checkDailyStreakOnGameComplete();
   var isRecord = recordLeaderboard('quiz', s.score, s.bestStreak);
   state.session.result = {
     type:'quiz',
@@ -1541,6 +1673,7 @@ function finishFillblank(){
   var s = state.session;
   state.stats.gamesPlayed = (state.stats.gamesPlayed||0)+1;
   saveStats();
+  checkDailyStreakOnGameComplete();
   var isRecord = recordLeaderboard('fillblank', s.score, s.bestStreak);
   state.session.result = {
     type:'fillblank',
