@@ -345,6 +345,7 @@ var LS_MASTERY = 'confxp_mastery_v1';
 var LS_STATS = 'confxp_stats_v1';
 var LS_LEADERBOARD = 'confxp_leaderboard_v1';
 var LS_DAILY = 'confxp_daily_v1';
+var LS_INTRODUCED = 'confxp_introduced_v1';
 
 function loadJSON(key, fallback){
   try{
@@ -364,6 +365,7 @@ var state = {
   stats: loadJSON(LS_STATS, {xp:0, gamesPlayed:0, bestStreakEver:0}),
   leaderboard: loadJSON(LS_LEADERBOARD, {}),
   daily: loadJSON(LS_DAILY, {currentStreak:0, longestStreak:0, lastDate:'', history:[]}),
+  introduced: loadJSON(LS_INTRODUCED, {}),
   session: null,
   vocabSearch: ''
 };
@@ -371,7 +373,22 @@ var state = {
 function saveVocab(){ saveJSON(LS_VOCAB, state.vocab); }
 function saveMastery(){ saveJSON(LS_MASTERY, state.mastery); }
 function saveStats(){ saveJSON(LS_STATS, state.stats); }
+function saveLeaderboard(){ saveJSON(LS_LEADERBOARD, state.leaderboard); }
 function saveDaily(){ saveJSON(LS_DAILY, state.daily); }
+function saveIntroduced(){ saveJSON(LS_INTRODUCED, state.introduced); }
+function markIntroduced(word){
+  var k = word.en.trim().toLowerCase();
+  if(!state.introduced[k]){
+    state.introduced[k] = true;
+    saveIntroduced();
+  }
+}
+function isIntroduced(word){
+  return !!state.introduced[word.en.trim().toLowerCase()];
+}
+function introducedWords(){
+  return state.vocab.filter(isIntroduced);
+}
 
 /* ====================================================================
    DAILY STREAK ENGINE
@@ -498,7 +515,6 @@ function renderStreakCalendar(){
     '</div>'+
   '</div>';
 }
-function saveDaily(){ saveJSON(LS_DAILY, state.daily); }
 
 function masteryKey(word){ return word.en.trim().toLowerCase(); }
 function getMastery(word){
@@ -610,7 +626,7 @@ function locateBlank(word){
   return {index:m.index, length:m[0].length, matched:m[0]};
 }
 function fillblankPool(){
-  return state.vocab.filter(function(w){ return locateBlank(w)!==null; });
+  return introducedWords().filter(function(w){ return locateBlank(w)!==null; });
 }
 function highlightExample(word){
   var loc = locateBlank(word);
@@ -754,8 +770,9 @@ function bindSharedNav(){
 function renderMenu(){
   var total = state.vocab.length;
   var mastered = masteredCount();
+  var introducedCount = introducedWords().length;
   var fbPoolLen = fillblankPool().length;
-  var quizOk = total>=4;
+  var quizOk = introducedCount>=4;
   var fcOk = total>=1;
   var fillOk = fbPoolLen>=1;
 
@@ -765,10 +782,16 @@ function renderMenu(){
         '<div class="icon">'+icon+'</div><h3>'+title+'</h3><p>'+desc+'</p>'+
         '<div class="go">Chơi ngay →</div></div>';
     }
-    return '<div class="mode-card '+cls+' disabled" data-nav="vocab">'+
+    return '<div class="mode-card '+cls+' disabled" data-nav="'+(total===0?'vocab':'flashcard-config')+'">'+
       '<div class="icon">'+icon+'</div><h3>'+title+'</h3><p>'+desc+'</p>'+
       '<div class="go">🔒 '+requirement+'</div></div>';
   }
+
+  var introHint = (total>0 && (!quizOk || !fillOk))
+    ? '<div class="footer-note" style="background:var(--accent-amber-dim);color:var(--accent-amber);border-radius:var(--radius-md);padding:10px 14px;margin-top:-6px;margin-bottom:18px;text-align:left;">'+
+      '💡 Quiz và Điền từ chỉ dùng từ bạn đã <b>học qua Flashcard</b> (lật thẻ ít nhất 1 lần). '+
+      'Hiện đã học <b>'+introducedCount+'/'+total+'</b> từ — chơi thêm Flashcard để mở khóa 2 game kia nhé!'+
+      '</div>' : '';
 
   return renderTopBar()+renderNavTabs('menu')+
   '<div class="stat-row">'+
@@ -781,9 +804,10 @@ function renderMenu(){
   '<div class="section-title">Chọn mini-game</div>'+
   '<div class="mode-grid">'+
     modeCard('flash','🃏','Flashcard','Lật thẻ xem nghĩa, tự đánh giá đã nhớ hay chưa để theo dõi mức độ thuộc bài.', fcOk, 'Cần ≥1 từ vựng','flashcard')+
-    modeCard('quiz','🎯','Quiz trắc nghiệm','Chọn nghĩa đúng hoặc từ đúng trong 4 đáp án. Trả lời nhanh để ăn điểm thưởng thời gian!', quizOk, 'Cần ≥4 từ vựng','quiz')+
-    modeCard('fill','✍️','Điền từ vào câu','Câu ví dụ bị che từ chính, gõ đúng từ tiếng Anh để hoàn thành câu.', fillOk, 'Cần từ có câu ví dụ chứa chính từ đó','fillblank')+
+    modeCard('quiz','🎯','Quiz trắc nghiệm','Chọn nghĩa đúng hoặc từ đúng trong 4 đáp án. Trả lời nhanh để ăn điểm thưởng thời gian!', quizOk, 'Cần ≥4 từ đã học qua Flashcard','quiz')+
+    modeCard('fill','✍️','Điền từ vào câu','Câu ví dụ bị che từ chính, gõ đúng từ tiếng Anh để hoàn thành câu.', fillOk, 'Cần từ đã học qua Flashcard (có câu ví dụ)','fillblank')+
   '</div>'+
+  introHint+
   (total===0?'<p class="footer-note">Bạn chưa có từ vựng nào. Vào tab "📚 Từ vựng" để dán danh sách từ và bắt đầu luyện tập.</p>':'')+
   '<div class="footer-note">Dữ liệu được lưu hoàn toàn trên máy bạn (localStorage) — không cần internet để chơi.</div>';
 }
@@ -1204,6 +1228,7 @@ function bindFlashcardEvents(){
     var s = state.session;
     if(!s.flipped){
       s.flipped = true;
+      markIntroduced(s.deck[s.index]);
       sounds.flip();
       render();
     }
@@ -1302,8 +1327,9 @@ function buildQuizQuestion(word, pool){
   return {word:word, direction:direction, correct:correct, options:options};
 }
 function startQuiz(){
-  var len = Math.min(QUIZ_LEN, Math.max(4, state.vocab.length));
-  var picks = buildSequence(state.vocab, len);
+  var introduced = introducedWords();
+  var len = Math.min(QUIZ_LEN, Math.max(4, introduced.length));
+  var picks = buildSequence(introduced, len);
   state.session = {
     type:'quiz',
     questions: picks.map(function(w){ return buildQuizQuestion(w, state.vocab); }),
@@ -1551,7 +1577,7 @@ function bindFillblankEvents(){
   $('.back-btn').addEventListener('click', function(){ navigate('menu'); });
   var input = $('#blankInput');
   input.focus();
-  $('#btnHint').addEventListener('click', function(){
+  $('#btnHint').onclick = function(){
     var s = state.session;
     var word = s.items[s.index];
     var loc = locateBlank(word);
@@ -1559,9 +1585,9 @@ function bindFillblankEvents(){
     input.setAttribute('placeholder', loc.matched[0]+'...');
     $('#fbFeedback').textContent = '💡 Gợi ý: từ bắt đầu bằng "'+loc.matched[0].toUpperCase()+'", có '+loc.length+' chữ.';
     sounds.click();
-  });
-  $('#btnCheck').addEventListener('click', function(){ checkFillblank(); });
-  $('#btnSkip').addEventListener('click', function(){ skipFillblank(); });
+  };
+  $('#btnCheck').onclick = function(){ checkFillblank(); };
+  $('#btnSkip').onclick  = function(){ skipFillblank(); };
   input.addEventListener('keydown', function(e){
     if(e.key==='Enter'){
       e.preventDefault();
